@@ -225,7 +225,7 @@ BOOL filterStock(char * Code, short nSetCode, NTime time1, NTime time2, BYTE nTQ
 
 	dInterval = dateInterval(startDate, time2);
 
-	if (dInterval.year < 1)
+	if (dInterval.year < 2)
 	{
 		delete[] pStockInfo;
 		pStockInfo = NULL;
