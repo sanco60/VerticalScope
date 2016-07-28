@@ -44,20 +44,20 @@ void GetCopyRightInfo(LPPLUGIN info)
 	//填写参数信息
 	info->ParamNum = 3;//表示3个参数
 
-	strcpy(info->ParamInfo[0].acParaName,"等份");
-	info->ParamInfo[0].nMin=1;
-	info->ParamInfo[0].nMax=20;
-	info->ParamInfo[0].nDefault=3;
+	strcpy(info->ParamInfo[0].acParaName,"百分比");
+	info->ParamInfo[0].nMin=0;
+	info->ParamInfo[0].nMax=1000;
+	info->ParamInfo[0].nDefault=20;
 
-	strcpy(info->ParamInfo[1].acParaName,"增长份数");
-	info->ParamInfo[1].nMin=-100;
-	info->ParamInfo[1].nMax=100;
-	info->ParamInfo[1].nDefault=0;
+	strcpy(info->ParamInfo[1].acParaName,"高水位");
+	info->ParamInfo[1].nMin=0;
+	info->ParamInfo[1].nMax=1;
+	info->ParamInfo[1].nDefault=1;
 
-	strcpy(info->ParamInfo[2].acParaName,"是否高于水位");
+	strcpy(info->ParamInfo[2].acParaName,"上涨");
 	info->ParamInfo[2].nMin=0;
 	info->ParamInfo[2].nMax=1;
-	info->ParamInfo[2].nDefault=0;
+	info->ParamInfo[2].nDefault=1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -135,15 +135,12 @@ LPHISDAT minClose(LPHISDAT pHisDat, long lDataNum)
 
 BOOL fEqual(float a, float b)
 {
-	const float fJudge = 0.01;
+	const float cJudge = 0.001;
 	float fValue = 0.0;
 
-	if (a > b)
-		fValue = a - b;
-	else 
-		fValue = b - a;
+	fValue = (a > b) ? a - b : b - a;
 
-	if (fValue > fJudge)
+	if (fValue > cJudge)
 		return FALSE;
 
 	return TRUE;
@@ -156,6 +153,31 @@ BOOL dateEqual(NTime t1, NTime t2)
 		return FALSE;
 
 	return TRUE;
+}
+
+//如果左边大于右边返回正数 左边小于右边返回负数 相等返回0 
+int dateCompare(NTime left, NTime right)
+{
+	const int cLeftBig = 1;
+	const int cRightBig = -1;
+	const int cSame = 0;
+
+	if (left.year > right.year)
+		return cLeftBig;
+	else if (left.year < right.year)
+		return cRightBig;
+
+	if (left.month > right.month)
+		return cLeftBig;
+	else if (left.month < right.month)
+		return cRightBig;
+
+	if (left.day > right.day)
+		return cLeftBig;
+	else if (left.day < right.day)
+		return cRightBig;
+
+	return cSame;
 }
 
 
@@ -171,14 +193,20 @@ NTime dateInterval(NTime nLeft, NTime nRight)
 	const unsigned int cDayofyear = 365;
 	const unsigned int cDayofmonth = 30;
 
-	iLeft = nLeft.year*cDayofyear + nLeft.month*cDayofmonth + nLeft.day;
-	iRight = nRight.year*cDayofyear + nRight.month*cDayofmonth + nRight.day;
+	//证券交易所成立年再往前推10年
+	const unsigned int cBaseYear = 1980;
+
+	if (nLeft.year < cBaseYear || nRight.year < cBaseYear)
+		return nInterval;
+	
+	iLeft = (nLeft.year - cBaseYear) * cDayofyear + (nLeft.month - 1) * cDayofmonth + nLeft.day;
+	iRight = (nRight.year - cBaseYear) * cDayofyear + (nRight.month - 1) * cDayofmonth + nRight.day;
 
 	iInterval = (iLeft > iRight) ? iLeft - iRight : iRight - iLeft;
 
 	nInterval.year = iInterval / cDayofyear;
 	iInterval = iInterval % cDayofyear;
-	nInterval.month = iInterval / cDayofmonth;
+	nInterval.month = (iInterval / cDayofmonth) + 1;
 	iInterval = iInterval % cDayofmonth;
 	nInterval.day = iInterval;
 
@@ -186,61 +214,103 @@ NTime dateInterval(NTime nLeft, NTime nRight)
 }
 
 
-/* 过滤函数
-   返回值：以S和*开头的股票 或者 上市不满一年，返回FALSE，否则返回TRUE
+/* 过滤函数 过滤 以S和*开头，不满一年的，停牌的股票
+   返回值： 符合条件返回FALSE表示不通过
 */
 BOOL filterStock(char * Code, short nSetCode, NTime time1, NTime time2, BYTE nTQ)
 {
 	if (NULL == Code)
 		return FALSE;
+
+	const unsigned short cMinYears = 2;	
+	const short cInfoNum = 2;
+	short iInfoNum = cInfoNum;
+
+	{
+		STOCKINFO stockInfoArray[cInfoNum];
+		memset(stockInfoArray, 0, cInfoNum*sizeof(STOCKINFO));
+
+		LPSTOCKINFO pStockInfo = stockInfoArray;
+
+		//获取股票名称以及上市时间
+		long readnum = g_pFuncCallBack(Code, nSetCode, STKINFO_DAT, pStockInfo, iInfoNum, time1, time2, nTQ, 0);
+		if (readnum <= 0)
+		{
+			//delete[] pStockInfo;
+			pStockInfo = NULL;
+			return FALSE;
+		}
+		if ('S' == pStockInfo->Name[0] || '*' == pStockInfo->Name[0])
+		{
+			//delete[] pStockInfo;
+			pStockInfo = NULL;
+			return FALSE;
+		}
+
+		NTime startDate, todayDate, dInterval;
+		memset(&startDate, 0, sizeof(NTime));
+		memset(&todayDate, 0, sizeof(NTime));
+		memset(&dInterval, 0, sizeof(NTime));
+
+		long lStartDate = pStockInfo->J_start;
+		startDate.year = lStartDate / 10000;
+		lStartDate = lStartDate % 10000;
+		startDate.month = lStartDate / 100;
+		lStartDate = lStartDate % 100;
+		startDate.day = lStartDate;
+
+		//获取今天日期
+		SYSTEMTIME tdTime;
+		memset(&tdTime, 0, sizeof(SYSTEMTIME));
+		GetLocalTime(&tdTime);
+
+		todayDate.year = tdTime.wYear;
+		todayDate.month = tdTime.wMonth;
+		todayDate.day = tdTime.wDay;
+
+		dInterval = dateInterval(startDate, todayDate);
+
+		//太年轻的股返回FALSE
+		if (dInterval.year < cMinYears)
+		{
+			//delete[] pStockInfo;
+			pStockInfo = NULL;
+			return FALSE;
+		}
+
+		//delete[] pStockInfo;
+		pStockInfo = NULL;
+	}
 	
-	int iInfoNum = 2;
-	LPSTOCKINFO pStockInfo = new STOCKINFO[iInfoNum];
-	memset(pStockInfo, 0, iInfoNum*sizeof(STOCKINFO));
-
-	long readnum = g_pFuncCallBack(Code, nSetCode, STKINFO_DAT, pStockInfo, iInfoNum, time1, time2, nTQ, 0);
-	if (readnum <= 0)
 	{
-		delete[] pStockInfo;
-		pStockInfo = NULL;
-		return FALSE;
-	}
-	if ('S' == pStockInfo->Name[0] || '*' == pStockInfo->Name[0])
-	{
-		delete[] pStockInfo;
-		pStockInfo = NULL;
-		return FALSE;
-	}
+		//获取股票当天的信息，当天停牌的返回FALSE
+		REPORTDAT2 reportArray[cInfoNum];
+		memset(reportArray, 0, cInfoNum*sizeof(REPORTDAT2));
 
-	NTime startDate, dInterval;
-	memset(&startDate, 0, sizeof(NTime));
-	memset(&dInterval, 0, sizeof(NTime));
+		LPREPORTDAT2 pReportDat2 = reportArray;
+		
+		//获取股票当天开盘信息
+		long readnum = g_pFuncCallBack(Code, nSetCode, REPORT_DAT2, pReportDat2, iInfoNum, time1, time2, nTQ, 0);
+		if (0 >= readnum)
+		{
+			pReportDat2 = NULL;
+			return FALSE;
+		}
 
-	long lStartDate = pStockInfo->J_start;
-	startDate.year = lStartDate / 10000;
-	lStartDate = lStartDate % 10000;
-	startDate.month = lStartDate / 100;
-	lStartDate = lStartDate % 100;
-	startDate.day = lStartDate;
-
-	dInterval = dateInterval(startDate, time2);
-
-	if (dInterval.year < 2)
-	{
-		delete[] pStockInfo;
-		pStockInfo = NULL;
-		return FALSE;
-	}
-
-	delete[] pStockInfo;
-	pStockInfo = NULL;
+		if ( fEqual(pReportDat2->Open, 0) )
+		{
+			pReportDat2 = NULL;
+			return FALSE;
+		}
+		pReportDat2 = NULL;
+	}	
 
 	return TRUE;
 }
 
 
 /* 计算最高与最低收盘价空间 */
-int calcMax2MinPercent(char * Code, short nSetCode, short DataType, NTime time1, NTime time2, BYTE nTQ)
+int calcMax2MinPercent(char * Code, short nSetCode, short DataType, NTime time1, NTime time2, BYTE nTQ, int bUp)
 {
 	int iMax2Min = -1;
 
@@ -265,7 +335,7 @@ int calcMax2MinPercent(char * Code, short nSetCode, short DataType, NTime time1,
 	}
 
 	//停牌股不计算直接返回
-	LPHISDAT pLate = pHisDat + readnum - 1;
+	/*LPHISDAT pLate = pHisDat + readnum - 1;
 	if (FALSE == dateEqual(pLate->Time, time2)
 		|| fEqual(pLate->fVolume, 0.0))
 	{
@@ -274,11 +344,20 @@ int calcMax2MinPercent(char * Code, short nSetCode, short DataType, NTime time1,
 		delete[] pHisDat;
 		pHisDat = NULL;
 		return iMax2Min;
-	}
+	}*/
 
 	//查找最高收盘价
 	pMax = maxClose(pHisDat, readnum);
 	pMin = minClose(pHisDat, readnum);
+
+	int iComp = dateCompare(pMax->Time, pMin->Time);
+	if ((0 < iComp && 0 == bUp)
+		|| (0 > iComp && 1 == bUp))
+	{
+		delete[] pHisDat;
+		pHisDat = NULL;
+		return iMax2Min;
+	}	
 
 	if (NULL == pMax || NULL == pMin)
 	{
@@ -308,16 +387,17 @@ BOOL InputInfoThenCalc2(char * Code,short nSetCode,int Value[4],short DataType,N
 {
 	BOOL nRet = FALSE;
 
-	if ( (Value[0] <= 0 || Value[0] > 100) 
-		|| (Value[1] < -100 || Value[1] > 100) 
-		|| (Value[2] < 0 || Value[2] > 1) 
+	if ( (Value[0] <= 0 || Value[0] > 1000) 
+		|| (Value[1] != 0 && Value[1] != 1) 
+		|| (Value[2] != 0 && Value[2] != 1) 
 		|| NULL == Code )
 		goto endCalc2;
 
-	int iFatherRate = 0, iSonRate = 0;
+	//int iFatherRate = 0;
+	int iSonRate = 0;
 
 	/* 计算对应大盘垂直空间百分比 */
-	EFatherCode eFCode = mathFatherCode(Code);
+	/*EFatherCode eFCode = mathFatherCode(Code);
 	if (EFatherCodeMax == eFCode)
 	{
 		OutputDebugStringA("========= Didn't find FatherCode for ");
@@ -328,7 +408,7 @@ BOOL InputInfoThenCalc2(char * Code,short nSetCode,int Value[4],short DataType,N
 	//判断是否计算过对应指数
 	if (g_FatherUpPercent[eFCode] < 0)
 	{
-		/*计算数据*/
+		//计算对应指数百分比
 		iFatherRate = calcMax2MinPercent(g_nFatherCode[eFCode], nSetCode, DataType, time1, time2, nTQ);
 		if ( iFatherRate < 0 )
 		{
@@ -339,11 +419,11 @@ BOOL InputInfoThenCalc2(char * Code,short nSetCode,int Value[4],short DataType,N
 	}
 	else
 	{
-		/**读取已计算过的数据 */
+		//读取已计算过的数据
 		iFatherRate = g_FatherUpPercent[eFCode];
-	}		
+	}	*/
 
-	/* 过滤垃圾股 */
+	/* 过滤垃圾股和停牌股 */
 	if (FALSE == filterStock(Code, nSetCode, time1, time2, nTQ))
 	{
 		OutputDebugStringA("===== filter stock : ");
@@ -353,26 +433,26 @@ BOOL InputInfoThenCalc2(char * Code,short nSetCode,int Value[4],short DataType,N
 	}
 
 	/* 计算个股垂直空间百分比 */
-	iSonRate = calcMax2MinPercent(Code, nSetCode, DataType, time1, time2, nTQ);
+	iSonRate = calcMax2MinPercent(Code, nSetCode, DataType, time1, time2, nTQ, Value[2]);
 	if (iSonRate < 0)
 	{
 		OutputDebugStringA("=========== son calcMax2MinPercent error!!\n");
 		goto endCalc2;
 	}
 	
-	int iOneCopy = iFatherRate/Value[0];
-	iOneCopy = (0 == iOneCopy) ? 1 : iOneCopy;
+	/*int ionecopy = ifatherrate/value[0];
+	ionecopy = (0 == ionecopy) ? 1 : ionecopy;
 
-	int iLine = iFatherRate + Value[1]*iOneCopy;
-	iLine = (0 > iLine) ? 0 : iLine;
+	int iline = ifatherrate + value[1]*ionecopy;
+	iline = (0 > iline) ? 0 : iline;*/
 
-	if (0 == Value[2])
+	if (0 == Value[1])
 	{
-		if (iSonRate <= iLine)
+		if (iSonRate <= Value[0])
 			nRet = TRUE;
 	} else
 	{
-		if (iSonRate >= iLine)
+		if (iSonRate >= Value[0])
 			nRet = TRUE;
 	}
 	
