@@ -387,7 +387,7 @@ BOOL InputInfoThenCalc2(char * Code,short nSetCode,int Value[4],short DataType,N
 {
 	BOOL nRet = FALSE;
 
-	if ( (Value[0] <= 0 || Value[0] > 1000) 
+	if ( (Value[0] < 0 || Value[0] > 1000) 
 		|| (Value[1] != 0 && Value[1] != 1) 
 		|| (Value[2] != 0 && Value[2] != 1) 
 		|| NULL == Code )
